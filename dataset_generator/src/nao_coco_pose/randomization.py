@@ -33,8 +33,10 @@ class DomainRandomizer:
     def sample_camera_pose(self, target):
         """Amostra posição da câmera numa casca esférica ao redor do alvo.
 
-        Returns (pos, target): ambos ndarray(3,) no mundo. A orientação é
-        derivada por look-at no controlador (projection.look_at_rotation).
+        Returns (pos, aim_point): pos é a posição da câmera; aim_point é o
+        ponto de mira (tronco do robô, com offset vertical configurável).
+        A esfera é centrada na base do robô (target), mas a câmera aponta
+        para o tronco, garantindo que o corpo inteiro fique no enquadramento.
         """
         c = self.cfg.camera
         r = self.rng.uniform(c["radius_min"], c["radius_max"])
@@ -44,7 +46,8 @@ class DomainRandomizer:
         offset = r * np.array([np.cos(el) * np.cos(az),
                                np.cos(el) * np.sin(az),
                                np.sin(el)])
-        return target + offset, target
+        aim_point = target + np.array([0.0, 0.0, float(c.get("target_offset_z", 0.0))])
+        return target + offset, aim_point
 
     # ----- ambiente -----
     def sample_lighting(self) -> dict:

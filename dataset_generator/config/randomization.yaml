@@ -36,8 +36,9 @@ camera:
   radius_min: 1.2     # metros
   radius_max: 2.5
   azimuth_deg: [0, 360]
-  elevation_deg: [-10, 45]
+  elevation_deg: [5, 50]
   settle_steps: 3     # passos de simulação antes de capturar
+  target_offset_z: 0.25  # mira no tronco, não na pelvis (NAO: base em z=0.333, topo em ~0.91)
 
 # Iluminação (ainda não aplicada no controlador — ver TODO em dataset_generator).
 lighting:

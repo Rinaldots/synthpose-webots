@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import numpy as np
 
-# Converte o referencial da câmera do Webots para o padrão de visão
-# computacional (x: direita, y: baixo, z: para frente).
-# PRESSUPOSTO: a câmera do Webots olha ao longo de -Z (x à direita, y p/ cima).
-# Se o overlay sair espelhado/de cabeça p/ baixo, ajuste os sinais aqui.
+# Converte o referencial da câmera (Webots +Z forward) para o padrão CV
+# (x: direita, y: baixo, z: para frente).
+# Com look_at_axis_angle aplicando 180°Y, a câmera olha ao longo de +Z local:
+#   z_cv = +z_cam  (frente é +Z; sem flip)
+#   y_cv = -y_cam  (Webots y↑ → CV y↓)
+#   x_cv = -x_cam  (o 180°Y inverteu o eixo X local; compensar para não espelhar)
+# Se o overlay sair espelhado ou de cabeça p/ baixo, ajuste os sinais aqui.
 AXIS_REMAP = np.array([
-    [1.0,  0.0,  0.0],
-    [0.0, -1.0,  0.0],
-    [0.0,  0.0, -1.0],
+    [-1.0,  0.0,  0.0],
+    [ 0.0, -1.0,  0.0],
+    [ 0.0,  0.0,  1.0],
 ])
 
 
@@ -66,20 +69,62 @@ def look_at_rotation(eye, target, up=(0.0, 0.0, 1.0)) -> np.ndarray:
     if np.linalg.norm(x) < 1e-9:           # up paralelo a z -> escolhe outro up
         x = np.cross(np.array([0.0, 1.0, 0.0]), z)
     x /= np.linalg.norm(x) + 1e-12
+
     y = np.cross(z, x)
     return np.column_stack([x, y, z])
 
+def look_at_axis_angle(eye, target, up=(0.0, 0.0, 1.0)) -> list[float]:
+    """[x,y,z,angle] (formato Webots) p/ a câmera em `eye` mirar `target`.
+
+    No Webots R2025a a Camera olha ao longo do +Z local (não -Z).
+    look_at_rotation cria local -Z → alvo; giramos 180° em torno de Y local
+    (nega colunas X e Z) para que local +Z fique apontando para o alvo.
+    """
+    R = look_at_rotation(eye, target, up)
+    R[:, 0] *= -1.0   # 180° em Y: nega eixo X local
+    R[:, 2] *= -1.0   # 180° em Y: nega eixo Z local → +Z agora aponta pro alvo
+    return rotation_to_axis_angle(R)
 
 def rotation_to_axis_angle(R) -> list[float]:
-    """Converte rotação 3x3 em [x, y, z, angle] (formato 'rotation' do Webots)."""
+    """Converte rotação 3x3 em [x, y, z, angle] (formato 'rotation' do Webots).
+    Via quaternion (Shepperd) — estável inclusive para angle ~ pi."""
     R = np.asarray(R, dtype=float)
-    angle = float(np.arccos(np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)))
-    if angle < 1e-9:
+    m00, m01, m02 = R[0]
+    m10, m11, m12 = R[1]
+    m20, m21, m22 = R[2]
+    tr = m00 + m11 + m22
+
+    if tr > 0.0:
+        S = np.sqrt(tr + 1.0) * 2.0          # S = 4*qw
+        qw = 0.25 * S
+        qx = (m21 - m12) / S
+        qy = (m02 - m20) / S
+        qz = (m10 - m01) / S
+    elif m00 > m11 and m00 > m22:
+        S = np.sqrt(1.0 + m00 - m11 - m22) * 2.0   # S = 4*qx
+        qw = (m21 - m12) / S
+        qx = 0.25 * S
+        qy = (m01 + m10) / S
+        qz = (m02 + m20) / S
+    elif m11 > m22:
+        S = np.sqrt(1.0 + m11 - m00 - m22) * 2.0   # S = 4*qy
+        qw = (m02 - m20) / S
+        qx = (m01 + m10) / S
+        qy = 0.25 * S
+        qz = (m12 + m21) / S
+    else:
+        S = np.sqrt(1.0 + m22 - m00 - m11) * 2.0   # S = 4*qz
+        qw = (m10 - m01) / S
+        qx = (m02 + m20) / S
+        qy = (m12 + m21) / S
+        qz = 0.25 * S
+
+    q = np.array([qw, qx, qy, qz], dtype=float)
+    q /= np.linalg.norm(q) + 1e-12
+    qw = float(q[0])
+    angle = 2.0 * np.arccos(np.clip(qw, -1.0, 1.0))
+    s = np.sqrt(max(1.0 - qw * qw, 0.0))
+    if s < 1e-9:                              # rotação ~ identidade
         return [0.0, 0.0, 1.0, 0.0]
-    axis = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
-    n = np.linalg.norm(axis)
-    if n < 1e-9:                           # angle ~ pi: extrai eixo da diagonal
-        axis = np.sqrt(np.clip((np.diag(R) + 1.0) / 2.0, 0.0, None))
-        return [float(axis[0]), float(axis[1]), float(axis[2]), angle]
-    axis /= n
-    return [float(axis[0]), float(axis[1]), float(axis[2]), angle]
+    axis = q[1:] / s
+    return [float(axis[0]), float(axis[1]), float(axis[2]), float(angle)]

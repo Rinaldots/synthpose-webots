@@ -28,7 +28,7 @@ from nao_coco_pose.coco_writer import CocoDatasetBuilder
 from nao_coco_pose.keypoints import COCO_KEYPOINTS
 from nao_coco_pose.nao_landmarks import KeypointResolver, NaoPoser, get_field  # , dump_solid_tree
 from nao_coco_pose.projection import (
-    look_at_rotation,
+    look_at_axis_angle,
     rotation_to_axis_angle,
     world_to_pixels,
 )
@@ -38,7 +38,7 @@ from nao_coco_pose.visibility import bbox_from_keypoints, visibility_flag
 # pose "de repouso" do NAO para reancorar a base a cada frame (em pé na arena)
 NAO_HOME_TRANSLATION = [0.0, 0.0, 0.333]
 NAO_HOME_ROTATION = [0.0, 0.0, 1.0, 0.0]
-
+# mapa de eixos para reajustar a orientação da câmera
 
 def main() -> None:
     conf = ROOT / "config"
@@ -60,6 +60,24 @@ def main() -> None:
 
     # Descomente UMA vez para inspecionar a árvore e conferir nomes de juntas:
     # dump_solid_tree(nao_node); return
+
+    # Coleta os campos jointParameters.position das falanges para zerá-los a cada
+    # resetPhysics(), evitando o warning "too low requested position < 0".
+    _phalanx_pos_fields = []
+    for _side in ("R", "L"):
+        for _i in range(1, 9):
+            _node = robot.getFromDef(f"{_side}Phalanx{_i}")
+            if _node is None:
+                continue
+            _jp_f = _node.getField("jointParameters")
+            if _jp_f is None:
+                continue
+            _jp = _jp_f.getSFNode()
+            if _jp is None:
+                continue
+            _pos = _jp.getField("position")
+            if _pos is not None:
+                _phalanx_pos_fields.append(_pos)
 
     nao_translation = get_field(nao_node, "translation")
     nao_rotation = get_field(nao_node, "rotation")
@@ -88,23 +106,63 @@ def main() -> None:
         # 1) randomizar cena
         nao_translation.setSFVec3f(NAO_HOME_TRANSLATION)
         nao_rotation.setSFRotation(NAO_HOME_ROTATION)
-        poser.apply(randomizer.sample_pose())
+        angles = randomizer.sample_pose()
+        poser.apply(angles)
 
-        cam_pos, target = randomizer.sample_camera_pose(nao_node.getPosition())
-        R = look_at_rotation(cam_pos, target)
-        rig_node.getField("translation").setSFVec3f([float(v) for v in cam_pos])
-        rig_node.getField("rotation").setSFRotation(rotation_to_axis_angle(R))
-        # TODO: aplicar iluminação/fundo (randomizer.sample_lighting / .sample_background)
-
-        # 2) deixar a física assentar e a câmera renderizar
+        # 2) re-ancora o NAO a cada passo para que a física não o tombe;
+        #    avança a simulação para estabilizar a pose.
+        #    resetPhysics() reseta o target interno dos motores para o valor padrão
+        #    do PROTO; por isso re-aplicamos os ângulos e zeramos as falanges logo
+        #    depois, antes do step(), para evitar warnings "too low/big requested pos".
         for _ in range(settle):
+            nao_translation.setSFVec3f(NAO_HOME_TRANSLATION)
+            nao_rotation.setSFRotation(NAO_HOME_ROTATION)
+            nao_node.resetPhysics()
+            poser.apply(angles)
+            for _f in _phalanx_pos_fields:
+                _f.setSFFloat(0.0)
             if robot.step(timestep) == -1:
                 break
 
+        # Centra a esfera na posição-home (não na física) para que o NAO em queda
+        # não arraste a câmera para o chão. nao_pos_real só serve para diagnóstico.
+        nao_pos_real = list(nao_node.getPosition())
+        cam_pos, target = randomizer.sample_camera_pose(NAO_HOME_TRANSLATION)
+        rig_node.getField("translation").setSFVec3f([float(v) for v in cam_pos])
+        rig_node.getField("rotation").setSFRotation(look_at_axis_angle(cam_pos, target, up=(0, 0, 1)))
+        # TODO: aplicar iluminação/fundo (randomizer.sample_lighting / .sample_background)
+        if robot.step(timestep) == -1:
+            break
+
         # 3) capturar as duas fontes do frame
+        cam_pos_real = list(rig.camera_node.getPosition())
+
         rgb = rig.capture_rgb()                       # imagem (input)
         kps_world = resolver.get_keypoints_world()    # juntas 3D (ground truth)
         cam_to_world = rig.cam_to_world()
+
+        if n == 0:
+            nao_rot_aa = nao_node.getField("rotation").getSFRotation()  # [x,y,z,angle]
+            cam_M = cam_to_world                                         # 4x4 cam->world
+            cam_R = cam_M[:3, :3]
+            cam_t = cam_M[:3,  3]
+            _r = lambda v: [round(float(x), 4) for x in v]
+            z_col = cam_R[:, 2]   # eixo +Z local da câmera (câmera olha em -Z)
+            cam_opt = -z_col      # direção óptica real (para onde a câmera aponta)
+            print("=" * 60)
+            print("[diag] NAO  translação (world):  ", _r(nao_pos_real))
+            print("[diag] NAO  rotação eixo-ângulo: ", _r(nao_rot_aa))
+            print("[diag] CAM  posição (world):     ", _r(cam_pos_real))
+            print("[diag] CAM  ponto de mira:       ", _r(list(target)))
+            print("[diag] CAM  direção óptica (-Z): ", _r(cam_opt))
+            print("[diag] CAM  matriz R (cam->world):")
+            for row in cam_R:
+                print("            ", _r(row))
+            print("[diag] CAM  translação t (cam->world):", _r(cam_t))
+            print("[diag] CAM  pose 4x4 completa (cam->world):")
+            for row in cam_M:
+                print("            ", _r(row))
+            print("=" * 60)
 
         # 4) projetar 3D -> 2D na ordem COCO
         pts, present = [], []
@@ -113,6 +171,14 @@ def main() -> None:
             present.append(p is not None)
             pts.append(p if p is not None else (0.0, 0.0, 0.0))
         uv, depth = world_to_pixels(pts, cam_to_world, K)
+
+        if n == 0:
+            print("[diag] keypoints frame 0 (nome: u, v, depth, flag):")
+            for i, name in enumerate(COCO_KEYPOINTS):
+                u, v = float(uv[i][0]), float(uv[i][1])
+                d = float(depth[i])
+                in_f = 0 <= u < rig.width and 0 <= v < rig.height
+                print(f"  {name:20s}: u={u:7.1f} v={v:7.1f} depth={d:6.3f} {'IN' if in_f and d>0 else 'OUT'}")
 
         # 5) visibilidade + bbox
         flags, kp_xyv = [], []
