@@ -250,9 +250,13 @@ def train(args: argparse.Namespace) -> None:
 
 # ---------------------------------------------------------------------------
 
+_SCRIPT_DIR = Path(__file__).resolve().parent          # .../scripts/
+_DATASET_DIR = _SCRIPT_DIR.parent / "output"          # .../output/
+_CKPT_DIR    = _SCRIPT_DIR.parent / "checkpoints"     # .../checkpoints/
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--data-root", default="../output",
+    p.add_argument("--data-root", default=str(_DATASET_DIR),
                    help="Pasta output/ com images/ e annotations/")
     p.add_argument("--epochs",   type=int,   default=50)
     p.add_argument("--batch",    type=int,   default=16)
@@ -260,6 +264,6 @@ if __name__ == "__main__":
     p.add_argument("--backbone", default="resnet50",
                    choices=["resnet18", "resnet34", "resnet50", "resnet101"])
     p.add_argument("--workers",  type=int,   default=4)
-    p.add_argument("--output",   default="../checkpoints",
+    p.add_argument("--output",   default=str(_CKPT_DIR),
                    help="Pasta para salvar checkpoints")
     train(p.parse_args())

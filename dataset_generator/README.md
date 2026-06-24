@@ -1,96 +1,87 @@
-# nao-coco-pose
+# dataset_generator
 
-Geração de **dataset sintético de pose** para o robô humanoide **NAO** no
-**Webots**, padronizado no formato **COCO-pose** (17 keypoints).
+Gerador de dataset sintético COCO-pose para o NAO via **Blender 5.1 headless**.
 
-A cada frame o pipeline renderiza uma imagem do NAO e extrai a *ground truth* 3D
-das juntas via Supervisor, projeta esses pontos para 2D, calcula visibilidade e
-bounding box, e grava tudo como anotação COCO. Com randomização de pose, câmera
-e ambiente, gera-se um dataset variado e reprodutível.
-
-> Estado: **esqueleto funcional**. O núcleo matemático (projeção, escrita COCO,
-> resolução de juntas) está implementado; alguns pontos acoplados à sua cena
-> estão marcados como `TODO` (ver "O que ajustar").
-
-## Estrutura
-
-```
-nao_coco_pose/
-├── README.md
-├── requirements.txt / pyproject.toml
-├── docs/
-│   ├── keypoint_mapping.md   # a padronização NAO→COCO (leia primeiro)
-│   ├── pipeline.md           # etapas e fluxo de dados
-│   └── datasheet.md          # modelo de datasheet do dataset
-├── config/
-│   ├── camera.yaml           # resolução e FOV
-│   ├── randomization.yaml    # limites de juntas, faixas de câmera/ambiente
-│   └── dataset.yaml          # N, splits, saída, semente
-├── protos/MyNao.proto        # seu PROTO do NAO
-├── worlds/dataset.wbt        # cena: NAO + rig da câmera observadora
-├── controllers/dataset_generator/
-│   └── dataset_generator.py  # ponto de entrada: o laço de captura
-├── src/nao_coco_pose/
-│   ├── keypoints.py          # 17 keypoints, esqueleto, mapeamento NAO→COCO
-│   ├── projection.py         # pinhole 3D→2D, look-at, eixo-ângulo
-│   ├── nao_landmarks.py      # juntas via Supervisor + aplicação de pose
-│   ├── camera.py             # captura RGB, intrínseca, extrínseca
-│   ├── visibility.py         # flags COCO + bbox
-│   ├── randomization.py      # domain randomization
-│   ├── coco_writer.py        # monta o JSON COCO
-│   └── config.py             # carrega YAML + semente
-└── scripts/
-    ├── validate_dataset.py   # QA com pycocotools
-    └── visualize_sample.py   # overlay de keypoints (valida a projeção)
-```
-
-## Setup
-
-Instale as dependências no **mesmo Python que o Webots usa** (Preferences →
-Python command):
+## Comandos
 
 ```bash
-pip install -e .            # ou: pip install -r requirements.txt
+# Gerar dataset completo (num_samples do config/dataset.yaml)
+cd blender
+blender --background nao_full.blend --python dataset_generator_blender.py
+
+# Continuar a partir de um índice (append no JSON existente)
+blender --background nao_full.blend --python dataset_generator_blender.py -- --start 1000
+
+# Gerar quantidade específica
+blender --background nao_full.blend --python dataset_generator_blender.py -- --start 2000 --num 500
+
+# Overlay de calibração (valida projeção + keypoints faciais)
+blender --background nao_full.blend --python overlay_test.py
+blender --background nao_full.blend --python overlay_multi.py
+
+# Validar JSON gerado
+python3 scripts/validate_dataset.py output/annotations/person_keypoints_train.json
+
+# Treinar
+python3 scripts/train.py --backbone resnet18 --epochs 50 --batch 8
 ```
 
-O controlador acrescenta `src/` ao `sys.path` sozinho; o `pip install -e .` é
-opcional, mas ajuda a rodar os scripts e testes fora do simulador.
+## Configuração
 
-## Como rodar
-
-1. Abra `worlds/dataset.wbt` no Webots R2025a.
-2. Confirme os `DEF`: `NAO` (o robô) e `RIG`/`CAMERA` (o rig observador que roda
-   o controlador `dataset_generator`).
-3. Rode a simulação. As imagens vão para `output/images/` e a anotação para
-   `output/annotations/person_keypoints.json`.
-4. Valide e inspecione:
-
-```bash
-python scripts/validate_dataset.py output/annotations/person_keypoints.json
-python scripts/visualize_sample.py \
-    output/annotations/person_keypoints.json output/images 0 overlay.png
+**`config/dataset.yaml`** — parâmetros gerais:
+```yaml
+num_samples: 1000
+splits: {train: 0.8, val: 0.1, test: 0.1}
+seed: 42
 ```
 
-O `overlay.png` é o teste decisivo: se os pontos caem nas juntas, a projeção e o
-mapeamento estão corretos.
+**`config/randomization.yaml`** — domínio de randomização:
+```yaml
+pose_range_scale: 0.6        # amplitude das poses (0=neutro, 1=limites máximos)
+backgrounds:                  # HDRIs (deixar [] para céu sólido)
+  - assets/backgrounds/cayley_interior_1k.hdr
+  - ...
+```
 
-## O que ajustar à sua cena
+## Saída
 
-Quatro pontos dependem do seu ambiente e estão marcados como `TODO` no código:
+```
+output/
+├── images/
+│   ├── train/  nao_00000.png … nao_00799.png
+│   ├── val/    nao_00800.png … nao_00899.png
+│   └── test/   nao_00900.png … nao_00999.png
+└── annotations/
+    ├── person_keypoints_train.json
+    ├── person_keypoints_val.json
+    └── person_keypoints_test.json
+```
 
-1. **Convenção de eixos da câmera** — valide `projection.AXIS_REMAP` pelo
-   overlay; inverta sinais se a imagem sair espelhada/de cabeça p/ baixo.
-2. **Offsets faciais** — ajuste os proxies de nariz/olhos/orelhas em
-   `keypoints.py` (ver `docs/keypoint_mapping.md`).
-3. **Oclusão real** — adicione um RangeFinder ao rig e passe o mapa de
-   profundidade para `visibility.occluded_by_depth` (hoje tudo no quadro = visível).
-4. **Iluminação/fundo** — conecte `randomizer.sample_lighting/background` aos
-   nós da cena no controlador.
+Formato COCO-pose padrão — compatível com MMPose, ViTPose, pycocotools etc.
 
-Se algum nome de junta não resolver, descomente a chamada a `dump_solid_tree`
-no controlador para listar a árvore do NAO e conferir os nomes.
+## Arquitetura dos módulos
 
-## Próximos passos sugeridos
+| Arquivo | Responsabilidade |
+|---|---|
+| `blender/dataset_generator_blender.py` | loop principal, ray cast, salva JSON |
+| `blender/nao_poser_blender.py` | FK no armature, keypoints 3D, offsets faciais |
+| `blender/blender_camera.py` | matriz K, cam_to_world, BLENDER_AXIS_REMAP |
+| `blender/blender_scene_randomizer.py` | cenas procedurais, texturas, HDRIs, oclusores |
+| `src/nao_coco_pose/projection.py` | world_to_pixels() — NumPy puro |
+| `src/nao_coco_pose/coco_writer.py` | CocoDatasetBuilder, load_existing() |
+| `src/nao_coco_pose/visibility.py` | flags COCO (0/1/2), bbox |
+| `src/nao_coco_pose/randomization.py` | DomainRandomizer (pose, câmera, iluminação) |
+| `scripts/train.py` | SimpleBaseline — ResNet + heatmaps, PCK@0.2 |
 
-Gere ~10 frames com `pose_range_scale` baixo, rode o overlay e calibre eixos e
-offsets faciais. Só depois suba o `num_samples` e ligue a randomização visual.
+## Convenções fixas (não alterar sem re-validar)
+
+- **NAO→Blender**: `(-v.y, v.x, v.z)` (rotação -90° em Z)
+- **BLENDER_AXIS_REMAP**: `diag(1,-1,-1)` — validado pelo overlay
+- **Keypoints faciais**: offsets em `_HEAD_OFFSETS_NAO`, rotados por `R_delta = R_pose @ R_rest.inverted()`
+- **Ordem dos 17 keypoints**: COCO oficial — não reordenar
+
+## Adicionando backgrounds
+
+1. Baixe HDRIs em 1k de [Poly Haven](https://polyhaven.com/hdris) (CC0)
+2. Coloque em `assets/backgrounds/`
+3. Liste em `config/randomization.yaml` sob `backgrounds:`
