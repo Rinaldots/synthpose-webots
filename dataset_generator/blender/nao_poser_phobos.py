@@ -26,17 +26,19 @@ from __future__ import annotations
 # Offsets faciais no referencial da cabeça (frame NAO: X=frente, Y=esq, Z=cima),
 # em metros, relativos à origem do objeto `Head` (junta HeadPitch).
 # Reaproveitados de nao_poser_blender._HEAD_OFFSETS_NAO; calibrar pelo overlay.
+# Olhos NÃO ficam aqui — são ancorados nos links dos sensores IR (COCO_TO_LINK).
 _HEAD_OFFSETS_NAO = {
-    "nose":       (0.058,  0.000,  0.055),
-    "left_eye":   (0.053,  0.030,  0.070),
-    "right_eye":  (0.053, -0.030,  0.070),
+    "nose":       (0.058,  0.000,  0.042),
     "left_ear":   (0.010,  0.066,  0.062),
     "right_ear":  (0.010, -0.066,  0.062),
 }
 
 # Keypoint COCO -> nome do objeto-link cuja origem (matrix_world.translation)
-# fornece a posição 3D do keypoint. Faciais tratados por offset a partir de Head.
+# fornece a posição 3D do keypoint. Faciais restantes (nariz/orelhas) por offset
+# a partir de Head. Olhos ancorados nos frames dos sensores IR (ficam nos olhos).
 COCO_TO_LINK = {
+    "left_eye":       "LInfraRed_frame",
+    "right_eye":      "RInfraRed_frame",
     "left_shoulder":  "LShoulder",
     "right_shoulder": "RShoulder",
     "left_elbow":     "LElbow",
