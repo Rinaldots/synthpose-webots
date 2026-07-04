@@ -248,18 +248,29 @@ class SceneRandomizer:
     # ------------------------------------------------------------------
 
     def _add_occluder(self, cam_pos) -> None:
-        """Coloca 0–2 objetos no caminho câmera→robô para oclusão parcial."""
+        """Coloca 0–2 objetos finos perto do caminho câmera→robô, para oclusão
+        *parcial leve*.
+
+        Enviesado para nenhum/poucos oclusores; postes finos deslocados
+        lateralmente (perpendicular ao raio câmera→origem) para roçar a borda do
+        robô em vez de cobrir o centro — evita oclusão total e reduz a parcial.
+        """
         r = self.rng
-        n = int(r.integers(0, 3))
+        # 70% nenhum, 24% um, 6% dois.
+        n = int(r.choice([0, 1, 2], p=[0.70, 0.24, 0.06]))
         if n == 0:
             return
         cx, cy = float(cam_pos[0]), float(cam_pos[1])
+        # Direção lateral (perpendicular ao raio câmera→origem), normalizada.
+        ln = math.hypot(cx, cy) or 1.0
+        lx, ly = -cy / ln, cx / ln
         for _ in range(n):
-            frac = float(r.uniform(0.25, 0.75))
-            ox   = cx * frac + float(r.uniform(-0.2, 0.2))
-            oy   = cy * frac + float(r.uniform(-0.2, 0.2))
-            h    = float(r.uniform(0.4, 1.3))
-            w    = float(r.uniform(0.06, 0.25))
+            frac = float(r.uniform(0.35, 0.70))            # mais perto do robô
+            side = float(r.uniform(0.16, 0.42)) * float(r.choice([-1.0, 1.0]))
+            ox   = cx * frac + lx * side
+            oy   = cy * frac + ly * side
+            h    = float(r.uniform(0.35, 1.05))
+            w    = float(r.uniform(0.05, 0.13))            # mais fino
             if bool(r.integers(0, 2)):
                 self._add_box((ox, oy, h / 2), (w / 2, w / 2, h / 2),
                               rot_z=float(r.uniform(0, math.pi)))
