@@ -429,3 +429,9 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# synthpose-webots
+# backups automáticos do Blender
+*.blend1
+# renders de validação (overlay/raw)
+dataset_generator/blender/yaw_test/
