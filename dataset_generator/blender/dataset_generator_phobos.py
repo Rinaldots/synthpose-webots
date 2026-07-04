@@ -49,6 +49,9 @@ _parser.add_argument("--start", type=int, default=0)
 _parser.add_argument("--num",   type=int, default=None)
 _parser.add_argument("--out",   type=str, default=None,
                      help="Sobrescreve output_dir do YAML (útil p/ testes)")
+_parser.add_argument("--save-every", type=int, default=1,
+                     help="Grava os JSONs de anotação a cada N amostras (checkpoint). "
+                          "<=0 desativa e grava só no fim.")
 _args = _parser.parse_args(_argv)
 
 # ---------------------------------------------------------------------------
@@ -59,6 +62,7 @@ rcfg = load_randomization(CFG_DIR / "randomization.yaml")
 
 START_INDEX = _args.start
 NUM_SAMPLES = _args.num if _args.num is not None else dcfg.num_samples
+SAVE_EVERY  = _args.save_every
 
 rng  = make_rng(dcfg.seed + START_INDEX)
 rand = DomainRandomizer(rng, rcfg)
@@ -259,6 +263,16 @@ def _visibility_ray(cam_pos, kp_world, uv, depth, depsgraph) -> int:
 # ---------------------------------------------------------------------------
 sc = bpy.context.scene
 
+def _flush(splits) -> None:
+    """Grava em disco os JSONs dos splits indicados (checkpoint incremental)."""
+    ann_dir.mkdir(parents=True, exist_ok=True)
+    for s in splits:
+        builder = split_builders[s]
+        if builder.images:
+            builder.save(ann_dir / f"person_keypoints_{s}.json")
+
+dirty: set[str] = set()
+
 for i in range(NUM_SAMPLES):
     frame_idx = START_INDEX + i
     split   = next(s for s, idx_set in split_map.items() if i in idx_set)
@@ -306,21 +320,26 @@ for i in range(NUM_SAMPLES):
 
     if area >= 1.0:
         split_builders[split].add_sample(ann_name, W, H, keypoints_xyv, bbox, area)
+        dirty.add(split)
+
+    # Checkpoint: grava os JSONs a cada SAVE_EVERY amostras para que as anotações
+    # acompanhem as imagens em disco (evita imagens órfãs se a geração for interrompida).
+    if SAVE_EVERY > 0 and (i + 1) % SAVE_EVERY == 0 and dirty:
+        _flush(dirty)
+        dirty.clear()
 
     n_vis = sum(f == V_VISIBLE  for f in flags)
     n_occ = sum(f == V_OCCLUDED for f in flags)
     print(f"[GEN-PHOBOS] {i+1}/{NUM_SAMPLES}  #{frame_idx}  {split}  {(rp.category or '-'):7s} {color:11s} vis={n_vis}/17 occ={n_occ}/17  {img_name}")
 
 # ---------------------------------------------------------------------------
-# Salva JSONs
+# Salva JSONs (flush final — garante o último checkpoint parcial)
 # ---------------------------------------------------------------------------
-ann_dir.mkdir(parents=True, exist_ok=True)
+_flush(split_builders.keys())
 for split, builder in split_builders.items():
-    if not builder.images:
-        continue
-    out_json = ann_dir / f"person_keypoints_{split}.json"
-    builder.save(out_json)
-    print(f"[GEN-PHOBOS] {split}: {len(builder.images)} imagens → {out_json}")
+    if builder.images:
+        out_json = ann_dir / f"person_keypoints_{split}.json"
+        print(f"[GEN-PHOBOS] {split}: {len(builder.images)} imagens → {out_json}")
 
 scene_rand.cleanup()
 print("\n[GEN-PHOBOS] Concluído.")

@@ -1,5 +1,5 @@
 # Parâmetros gerais do dataset.
-num_samples: 3700         # total de frames a gerar
+num_samples: 10000         # total de frames a gerar
 splits:                    # proporção treino/val/teste (somam 1.0)
   train: 0.8
   val: 0.1

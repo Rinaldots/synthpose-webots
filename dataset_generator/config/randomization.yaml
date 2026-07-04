@@ -2,7 +2,7 @@
 
 # Reduz a amplitude em torno do meio de cada faixa (0..1). Valores menores ->
 # poses mais "naturais"; 1.0 = usa o range articular cheio.
-pose_range_scale: 0.6
+pose_range_scale: 0.8
 
 # Limites articulares do NAO em RADIANOS [min, max].
 # Valores aproximados da documentação do NAO — confira os do seu modelo
@@ -46,7 +46,7 @@ pose_categories:
       RKneePitch:  [-0.10,  0.40]
       LAnklePitch: [-0.40,  0.30]
       RAnklePitch: [-0.40,  0.30]
-    torso_tilt_deg: {pitch: [-8, 8],  roll: [-6, 6]}
+    torso_tilt_deg: {pitch: [-15, 15],  roll: [-15, 15]}
   crouch:                       # agachado, joelhos/quadris flexionados moderado
     weight: 0.30
     joint_overrides:
@@ -54,7 +54,7 @@ pose_categories:
       RHipPitch:   [-1.20, -0.50]
       LKneePitch:  [ 0.80,  1.50]
       RKneePitch:  [ 0.80,  1.50]
-    torso_tilt_deg: {pitch: [-10, 25], roll: [-10, 10]}
+    torso_tilt_deg: {pitch: [-20, 35], roll: [-20, 20]}
   sit:                          # sentado, flexão máxima de quadril/joelho
     weight: 0.25
     joint_overrides:
@@ -62,11 +62,11 @@ pose_categories:
       RHipPitch:   [-1.77, -1.00]
       LKneePitch:  [ 1.40,  2.11]
       RKneePitch:  [ 1.40,  2.12]
-    torso_tilt_deg: {pitch: [-25, 10], roll: [-12, 12]}
+    torso_tilt_deg: {pitch: [-35, 20], roll: [-22, 22]}
   fallen:                       # caído/deitado, tronco muito inclinado
     weight: 0.10
     joint_overrides: {}
-    torso_tilt_deg: {pitch: [65, 110], roll: [-50, 50]}
+    torso_tilt_deg: {pitch: [85, 180], roll: [-80, 80]}
 
 # Câmera: posição amostrada numa casca esférica ao redor do NAO.
 camera:
@@ -79,9 +79,9 @@ camera:
   decenter: 0.8
   # Ângulo de captura: roll da câmera em graus (horizonte inclinado). Os keypoints
   # são reprojetados pela matriz real da câmera, então acompanham a inclinação.
-  roll_deg: [-25, 25]
+  roll_deg: [-45, 45]
   azimuth_deg: [0, 360]
-  elevation_deg: [5, 50]
+  elevation_deg: [-10, 80]
 
 # Iluminação (ainda não aplicada no controlador — ver TODO em dataset_generator).
 lighting:
