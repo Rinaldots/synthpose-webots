@@ -87,6 +87,68 @@ def _make_gaussian(cy: float, cx: float, sigma: float = SIGMA) -> np.ndarray:
     return hm
 
 
+def _photometric_augment(img: np.ndarray) -> np.ndarray:
+    """Augment fotométrico para fechar o gap sim2real (sensor/foto de câmera real).
+
+    Não altera a geometria — os keypoints ficam intactos. Entra e sai uint8 RGB
+    (H, W, 3). Só usa numpy + cv2 (sem dependências novas). Cada efeito é aplicado
+    com probabilidade própria, empilhando naturalmente.
+    """
+    rnd = np.random.rand
+
+    # Brilho e contraste.
+    if rnd() < 0.8:
+        alpha = 1.0 + np.random.uniform(-0.25, 0.25)   # contraste
+        beta  = np.random.uniform(-25, 25)             # brilho
+        img = np.clip(img.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+
+    # Jitter de matiz/saturação/valor (white-balance e exposição de câmera real).
+    if rnd() < 0.7:
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.int16)
+        hsv[..., 0] = (hsv[..., 0] + np.random.randint(-10, 11)) % 180
+        hsv[..., 1] = np.clip(hsv[..., 1] * np.random.uniform(0.7, 1.3), 0, 255)
+        hsv[..., 2] = np.clip(hsv[..., 2] * np.random.uniform(0.8, 1.2), 0, 255)
+        img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+    # Desfoque: gaussiano ou de movimento (foco imperfeito / movimento).
+    if rnd() < 0.3:
+        k = int(np.random.choice([3, 5]))
+        if rnd() < 0.5:
+            img = cv2.GaussianBlur(img, (k, k), 0)
+        else:
+            kernel = np.zeros((k, k), np.float32)
+            if rnd() < 0.5:
+                kernel[k // 2, :] = 1.0 / k
+            else:
+                kernel[:, k // 2] = 1.0 / k
+            img = cv2.filter2D(img, -1, kernel)
+
+    # Ruído gaussiano de sensor (render é limpo demais).
+    if rnd() < 0.5:
+        noise = np.random.randn(*img.shape) * np.random.uniform(3, 12)
+        img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+    # Artefatos de compressão JPEG.
+    if rnd() < 0.4:
+        q = int(np.random.randint(35, 85))
+        ok, enc = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
+                               [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if ok:
+            img = cv2.cvtColor(cv2.imdecode(enc, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+
+    # Coarse dropout: oclusão parcial controlada (robustez sem render inútil).
+    if rnd() < 0.3:
+        h, w = img.shape[:2]
+        for _ in range(int(np.random.randint(1, 4))):
+            bw = int(np.random.randint(max(1, int(0.06 * w)), int(0.20 * w) + 1))
+            bh = int(np.random.randint(max(1, int(0.06 * h)), int(0.20 * h) + 1))
+            x0 = int(np.random.randint(0, w - bw + 1))
+            y0 = int(np.random.randint(0, h - bh + 1))
+            img[y0:y0 + bh, x0:x0 + bw] = np.random.randint(0, 256, 3, dtype=np.uint8)
+
+    return img
+
+
 class NaoPoseDataset(Dataset):
 
     def __init__(self, img_root: Path, ann_file: Path, augment: bool = False):
@@ -109,9 +171,7 @@ class NaoPoseDataset(Dataset):
         path = self.img_root / img_info["file_name"]
         img  = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
         orig_h, orig_w = img.shape[:2]
-
-        img = cv2.resize(img, (IMG_W, IMG_H)).astype(np.float32) / 255.0
-        img = (img - MEAN) / STD
+        img = cv2.resize(img, (IMG_W, IMG_H))   # uint8 RGB
 
         kps = np.array(ann["keypoints"], dtype=np.float32).reshape(17, 3)
 
@@ -122,6 +182,11 @@ class NaoPoseDataset(Dataset):
             for a, b in _FLIP_PAIRS:
                 kps[[a, b]] = kps[[b, a]]
 
+        if self.augment:
+            img = _photometric_augment(np.ascontiguousarray(img))
+
+        img = img.astype(np.float32) / 255.0
+        img = (img - MEAN) / STD
         img_t = torch.from_numpy(img.transpose(2, 0, 1).copy())
 
         sx = (HM_W / orig_w)
