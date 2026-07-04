@@ -28,6 +28,7 @@ sys.path.insert(0, str(PROJ_ROOT / "src"))
 
 from nao_poser_phobos         import (NaoPoserPhobos, hide_metadata_collections,
                                       COCO_KEYPOINTS_ORDER)
+from nao_texture             import NaoTextureRandomizer
 from blender_camera           import build_K, cam_to_world as get_c2w, BLENDER_AXIS_REMAP
 from blender_scene_randomizer import SceneRandomizer
 from nao_coco_pose.config        import load_dataset, load_randomization, make_rng
@@ -102,6 +103,10 @@ hide_metadata_collections()
 poser = NaoPoserPhobos()
 if not poser._joint_obj:
     sys.exit("[GEN-PHOBOS] nenhuma junta encontrada. Rode com nao_blender.blend.")
+
+# Randomizador da cor de time do NAO (troca a textura por amostra).
+tex_rand = NaoTextureRandomizer()
+print(f"[GEN-PHOBOS] variantes de cor: {tex_rand.names}")
 
 def _ground_robot() -> float:
     """Levanta o NAO para que o ponto mais baixo (em repouso) fique em z=0.
@@ -217,6 +222,7 @@ for i in range(NUM_SAMPLES):
     ann_name = f"{split}/{img_name}"
 
     poser.apply_pose(rand.sample_pose())
+    color = tex_rand.randomize(rng)
 
     cam_pos, aim_pt = rand.sample_camera_pose(robot_base)
     _place_camera(cam_pos, aim_pt)
@@ -252,7 +258,7 @@ for i in range(NUM_SAMPLES):
 
     n_vis = sum(f == V_VISIBLE  for f in flags)
     n_occ = sum(f == V_OCCLUDED for f in flags)
-    print(f"[GEN-PHOBOS] {i+1}/{NUM_SAMPLES}  #{frame_idx}  {split}  vis={n_vis}/17 occ={n_occ}/17  {img_name}")
+    print(f"[GEN-PHOBOS] {i+1}/{NUM_SAMPLES}  #{frame_idx}  {split}  {color:11s} vis={n_vis}/17 occ={n_occ}/17  {img_name}")
 
 # ---------------------------------------------------------------------------
 # Salva JSONs
