@@ -31,14 +31,52 @@ joint_limits:
   RAnklePitch:    [-1.1864,  0.9320]
   RAnkleRoll:     [-0.7690,  0.3978]
 
+# Variedade explícita de poses. Cada categoria tem um peso relativo (sorteio),
+# overrides de faixa articular (rad) para as juntas-chave das pernas, e a
+# inclinação do tronco (base_link) em graus [min,max]: pitch em torno de Y
+# (frente/trás), roll em torno de X (lateral). Juntas sem override usam o range
+# global reduzido por pose_range_scale.
+pose_categories:
+  stand:                        # de pé, pernas quase esticadas, tronco ~vertical
+    weight: 0.35
+    joint_overrides:
+      LHipPitch:   [-0.35,  0.20]
+      RHipPitch:   [-0.35,  0.20]
+      LKneePitch:  [-0.09,  0.40]
+      RKneePitch:  [-0.10,  0.40]
+      LAnklePitch: [-0.40,  0.30]
+      RAnklePitch: [-0.40,  0.30]
+    torso_tilt_deg: {pitch: [-8, 8],  roll: [-6, 6]}
+  crouch:                       # agachado, joelhos/quadris flexionados moderado
+    weight: 0.30
+    joint_overrides:
+      LHipPitch:   [-1.20, -0.50]
+      RHipPitch:   [-1.20, -0.50]
+      LKneePitch:  [ 0.80,  1.50]
+      RKneePitch:  [ 0.80,  1.50]
+    torso_tilt_deg: {pitch: [-10, 25], roll: [-10, 10]}
+  sit:                          # sentado, flexão máxima de quadril/joelho
+    weight: 0.25
+    joint_overrides:
+      LHipPitch:   [-1.77, -1.00]
+      RHipPitch:   [-1.77, -1.00]
+      LKneePitch:  [ 1.40,  2.11]
+      RKneePitch:  [ 1.40,  2.12]
+    torso_tilt_deg: {pitch: [-25, 10], roll: [-12, 12]}
+  fallen:                       # caído/deitado, tronco muito inclinado
+    weight: 0.10
+    joint_overrides: {}
+    torso_tilt_deg: {pitch: [65, 110], roll: [-50, 50]}
+
 # Câmera: posição amostrada numa casca esférica ao redor do NAO.
 camera:
-  radius_min: 1.2     # metros
-  radius_max: 2.5
+  # Distância = fator * distância-de-encaixe (derivada do bbox do robô + FOV, por
+  # amostra). O robô ocupa uma fração ~constante do quadro em qualquer pose;
+  # fatores maiores = robô menor / mais contexto. 1.0 = robô encostando nas bordas.
+  distance_factor: [1.25, 2.1]
   azimuth_deg: [0, 360]
   elevation_deg: [5, 50]
-  settle_steps: 3     # passos de simulação antes de capturar
-  target_offset_z: 0.25  # mira no tronco, não na pelvis (NAO: base em z=0.333, topo em ~0.91)
+  target_offset_z: 0.0   # mira no centro real do robô (calculado por amostra)
 
 # Iluminação (ainda não aplicada no controlador — ver TODO em dataset_generator).
 lighting:

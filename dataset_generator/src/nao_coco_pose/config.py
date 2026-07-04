@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import yaml
@@ -22,6 +22,9 @@ class RandomizationConfig:
     camera: dict         # radius_min/max, azimuth_deg, elevation_deg, settle_steps
     lighting: dict       # intensity:[lo,hi], color_range:[lo,hi]
     backgrounds: list
+    # Variedade explícita de poses. {nome: {weight, joint_overrides, torso_tilt_deg}}.
+    # Vazio -> comportamento antigo (sample_pose, sem inclinação de tronco).
+    pose_categories: dict = field(default_factory=dict)
 
 
 @dataclass

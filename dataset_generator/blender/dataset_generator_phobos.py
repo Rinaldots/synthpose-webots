@@ -108,31 +108,60 @@ if not poser._joint_obj:
 tex_rand = NaoTextureRandomizer()
 print(f"[GEN-PHOBOS] variantes de cor: {tex_rand.names}")
 
-def _ground_robot() -> float:
-    """Levanta o NAO para que o ponto mais baixo (em repouso) fique em z=0.
+# Meshes do robô, capturados ANTES de criar chão/cena/oclusores. Usados para o
+# bbox de enquadramento e aterramento (exclui Ground e oclusores da SceneRandomizer).
+ROBOT_MESHES = [o for o in bpy.data.objects if o.type == "MESH" and not o.hide_render]
+print(f"[GEN-PHOBOS] {len(ROBOT_MESHES)} meshes do robô")
 
-    Retorna a altura do tronco (origem de base_link) após o ajuste, usada como
-    centro de órbita da câmera.
+def _apply_base_tilt(pitch_deg: float, roll_deg: float) -> None:
+    """Inclina o tronco rotacionando base_link em torno de Y (pitch) e X (roll).
+
+    Frame NAO == mundo Blender (X=frente, Y=esq, Z=cima): pitch inclina p/ frente
+    ou trás, roll inclina lateralmente. Reescrito a cada amostra.
     """
-    poser.apply_pose({})
+    base = bpy.data.objects.get("base_link")
+    if base is None:
+        return
+    base.rotation_mode = "QUATERNION"
+    base.rotation_quaternion = (
+        mathutils.Quaternion((0.0, 1.0, 0.0), math.radians(pitch_deg))
+        @ mathutils.Quaternion((1.0, 0.0, 0.0), math.radians(roll_deg))
+    )
+
+def _ground_and_target():
+    """Assenta o robô (menor ponto em z=0) e devolve (alvo, raio_bbox).
+
+    Alvo = centro XY do bounding box do robô e meia-altura em Z. raio_bbox = raio
+    da esfera envolvente (metade da diagonal), usado para enquadrar a câmera.
+    Deve ser chamado após aplicar a pose das juntas e a inclinação do tronco.
+    """
     bpy.context.view_layer.update()
     base = bpy.data.objects.get("base_link")
     dg = bpy.context.evaluated_depsgraph_get()
-    min_z = 1e9
-    for o in bpy.data.objects:
-        if o.type != "MESH" or o.hide_render:
-            continue
+    lo = mathutils.Vector(( 1e9,  1e9,  1e9))
+    hi = mathutils.Vector((-1e9, -1e9, -1e9))
+    for o in ROBOT_MESHES:
         ev = o.evaluated_get(dg)
         for corner in ev.bound_box:
-            min_z = min(min_z, (o.matrix_world @ mathutils.Vector(corner))[2])
-    base.location.z += -min_z
+            w = o.matrix_world @ mathutils.Vector(corner)
+            for k in range(3):
+                lo[k] = min(lo[k], w[k]); hi[k] = max(hi[k], w[k])
+    base.location.z += -lo[2]
     bpy.context.view_layer.update()
-    return float(base.location.z)
+    # Após reassentar: Z vai de 0 a (hi.z - lo.z); XY inalterado pelo shift.
+    center = np.array([0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (hi[2] - lo[2])])
+    bbox_radius = 0.5 * float((hi - lo).length)
+    return center, bbox_radius
 
-BASE_Z = _ground_robot()
-# Centro de órbita: tronco a ~0.05 m acima da origem de base_link.
-robot_base = np.array([0.0, 0.0, BASE_Z + 0.05])
-print(f"[GEN-PHOBOS] robot_base={robot_base.tolist()}")
+def _fit_distance(bbox_radius: float) -> float:
+    """Distância em que a esfera de raio bbox_radius encaixa no menor semi-FOV."""
+    v_half = math.atan((0.5 * cam_data.sensor_width * H / W) / cam_data.lens)
+    return bbox_radius / math.sin(v_half)
+
+# Alvo inicial (recalculado por amostra no loop).
+poser.apply_pose({})
+robot_base, _ = _ground_and_target()
+print(f"[GEN-PHOBOS] robot_base(inicial)={robot_base.round(3).tolist()}")
 
 def _setup_scene():
     bpy.ops.mesh.primitive_plane_add(size=10, location=(0, 0, 0))
@@ -184,8 +213,8 @@ def _place_camera(cam_pos, aim_pt):
         mathutils.Vector(aim_pt) - mathutils.Vector(cam_pos)
     ).to_track_quat("-Z", "Y").to_euler()
 
-def _apply_dof(cam_pos):
-    focus_dist = float(np.linalg.norm(np.array(cam_pos) - robot_base))
+def _apply_dof(cam_pos, target):
+    focus_dist = float(np.linalg.norm(np.array(cam_pos) - np.asarray(target)))
     cam_data.dof.use_dof        = True
     cam_data.dof.focus_distance = focus_dist
     cam_data.dof.aperture_fstop = float(rng.uniform(2.8, 11.0))
@@ -221,12 +250,15 @@ for i in range(NUM_SAMPLES):
     img_path = img_dir / img_name
     ann_name = f"{split}/{img_name}"
 
-    poser.apply_pose(rand.sample_pose())
+    rp = rand.sample_robot_pose()
+    poser.apply_pose(rp.joints)
+    _apply_base_tilt(*rp.tilt_deg)
+    cam_target, bbox_r = _ground_and_target()
     color = tex_rand.randomize(rng)
 
-    cam_pos, aim_pt = rand.sample_camera_pose(robot_base)
+    cam_pos, aim_pt = rand.sample_camera_pose(cam_target, _fit_distance(bbox_r))
     _place_camera(cam_pos, aim_pt)
-    _apply_dof(cam_pos)
+    _apply_dof(cam_pos, cam_target)
     _apply_lighting(rand.sample_lighting())
 
     scene_rand.randomize(cam_pos)
@@ -258,7 +290,7 @@ for i in range(NUM_SAMPLES):
 
     n_vis = sum(f == V_VISIBLE  for f in flags)
     n_occ = sum(f == V_OCCLUDED for f in flags)
-    print(f"[GEN-PHOBOS] {i+1}/{NUM_SAMPLES}  #{frame_idx}  {split}  {color:11s} vis={n_vis}/17 occ={n_occ}/17  {img_name}")
+    print(f"[GEN-PHOBOS] {i+1}/{NUM_SAMPLES}  #{frame_idx}  {split}  {(rp.category or '-'):7s} {color:11s} vis={n_vis}/17 occ={n_occ}/17  {img_name}")
 
 # ---------------------------------------------------------------------------
 # Salva JSONs
