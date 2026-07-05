@@ -27,6 +27,9 @@ class SceneRandomizer:
         self._world      = world_obj
         self._scene_objs: list = []
         self._floor_mat  = self._init_floor_mat()
+        # Grafo do mundo (céu/HDRI) construído uma vez e reaproveitado por frame.
+        self._world_built = False
+        self._bg_node = self._env_node = self._map_node = None
 
     # ------------------------------------------------------------------
     # API pública
@@ -200,45 +203,53 @@ class SceneRandomizer:
     # Céu / HDRI
     # ------------------------------------------------------------------
 
-    def set_background(self, img_path: str | None) -> None:
-        """Define textura de ambiente a partir de um arquivo (HDRI, JPG, PNG).
+    def _ensure_world(self) -> None:
+        """Constrói o grafo do mundo UMA vez (reutilizado em todos os frames).
 
-        Se img_path for None, reverte para céu sólido aleatório.
+        Antes reconstruía-se todo o node tree a cada chamada (e são 2 por frame:
+        _randomize_sky + set_background do HDRI). Agora só os *valores* (imagem,
+        rotação, força, link do Color) mudam por frame — bem mais barato.
         """
-        nodes = self._world.node_tree.nodes
-        links = self._world.node_tree.links
-        nodes.clear()
+        if self._world_built:
+            return
+        nt = self._world.node_tree
+        nt.nodes.clear()
+        self._bg_node  = nt.nodes.new("ShaderNodeBackground")
+        out_node       = nt.nodes.new("ShaderNodeOutputWorld")
+        nt.links.new(self._bg_node.outputs["Background"], out_node.inputs["Surface"])
+        # Cadeia da textura de ambiente: fica pronta, conectada ao Color só no modo HDRI.
+        self._env_node = nt.nodes.new("ShaderNodeTexEnvironment")
+        coord_node     = nt.nodes.new("ShaderNodeTexCoord")
+        self._map_node = nt.nodes.new("ShaderNodeMapping")
+        nt.links.new(coord_node.outputs["Generated"], self._map_node.inputs["Vector"])
+        nt.links.new(self._map_node.outputs["Vector"], self._env_node.inputs["Vector"])
+        self._world_built = True
 
-        bg_node  = nodes.new("ShaderNodeBackground")
-        out_node = nodes.new("ShaderNodeOutputWorld")
+    def set_background(self, img_path: str | None) -> None:
+        """Atualiza o mundo: HDRI (arquivo) ou céu sólido aleatório (img_path=None)."""
+        self._ensure_world()
+        links = self._world.node_tree.links
+        bg = self._bg_node
+        r = self.rng
+        # Desliga o Color do background (modo sólido); religa se for HDRI.
+        for lnk in list(bg.inputs["Color"].links):
+            links.remove(lnk)
 
         if img_path is not None:
             from pathlib import Path as _Path
             p = _Path(img_path)
             if p.exists():
-                tex_node  = nodes.new("ShaderNodeTexEnvironment")
-                img = bpy.data.images.load(str(p), check_existing=True)
-                tex_node.image = img
-
-                # Rotação aleatória em Z para variar a orientação do HDRI
-                coord_node   = nodes.new("ShaderNodeTexCoord")
-                mapping_node = nodes.new("ShaderNodeMapping")
-                mapping_node.inputs["Rotation"].default_value = (
-                    0.0, 0.0, float(self.rng.uniform(0, 2 * math.pi)))
-                links.new(coord_node.outputs["Generated"], mapping_node.inputs["Vector"])
-                links.new(mapping_node.outputs["Vector"],  tex_node.inputs["Vector"])
-                links.new(tex_node.outputs["Color"],       bg_node.inputs["Color"])
-                bg_node.inputs["Strength"].default_value = float(self.rng.uniform(0.6, 1.2))
-                links.new(bg_node.outputs["Background"], out_node.inputs["Surface"])
+                self._env_node.image = bpy.data.images.load(str(p), check_existing=True)
+                self._map_node.inputs["Rotation"].default_value = (
+                    0.0, 0.0, float(r.uniform(0, 2 * math.pi)))
+                links.new(self._env_node.outputs["Color"], bg.inputs["Color"])
+                bg.inputs["Strength"].default_value = float(r.uniform(0.6, 1.2))
                 return
-            else:
-                print(f"[SCENE] background não encontrado: {img_path}")
+            print(f"[SCENE] background não encontrado: {img_path}")
 
         # fallback: cor sólida
-        rr = self.rng
-        bg_node.inputs["Color"].default_value    = _hsv(float(rr.uniform(0,1)), float(rr.uniform(0,0.15)), float(rr.uniform(0.3,0.85)))
-        bg_node.inputs["Strength"].default_value = float(rr.uniform(0.2, 0.6))
-        links.new(bg_node.outputs["Background"], out_node.inputs["Surface"])
+        bg.inputs["Color"].default_value    = _hsv(float(r.uniform(0,1)), float(r.uniform(0,0.15)), float(r.uniform(0.3,0.85)))
+        bg.inputs["Strength"].default_value = float(r.uniform(0.2, 0.6))
 
     def _randomize_sky(self):
         self.set_background(None)
