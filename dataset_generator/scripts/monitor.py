@@ -71,11 +71,15 @@ def gpu_stats() -> list[dict]:
 
 
 def count_done(out_dir: Path, image_format: str = "png") -> int:
-    """Conta imagens já geradas (PNGs em <out>/images/**)."""
-    imgs = out_dir / "images"
-    if not imgs.is_dir():
+    """Conta PNGs sob qualquer subárvore ``images/`` dentro de ``out_dir``.
+
+    Cobre tanto o layout de 1 processo (``output/images/**``) quanto o de várias
+    GPUs numa máquina (``output/gpu0/images/**`` + ``output/gpu1/images/**``).
+    """
+    out_dir = Path(out_dir)
+    if not out_dir.is_dir():
         return 0
-    return sum(1 for _ in imgs.rglob(f"*.{image_format}"))
+    return sum(1 for p in out_dir.rglob(f"*.{image_format}") if "images" in p.parts)
 
 
 def snapshot_dict(out_dir: Path, num: int | None, t0: float, done0: int,

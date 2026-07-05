@@ -37,11 +37,13 @@ from pathlib import Path
 ANN_GLOB = "person_keypoints_*.json"
 
 
-def _resolve_source(src: Path, tmp_root: Path) -> Path:
-    """Devolve a raiz de um dataset (pasta com images/ + annotations/).
+def _resolve_sources(src: Path, tmp_root: Path) -> list[Path]:
+    """Devolve as raízes de dataset (pastas com images/ + annotations/) em `src`.
 
-    Extrai .zip para tmp_root; procura a subpasta que contém 'annotations' caso o
-    zip tenha um nível a mais (ex.: zip da pasta 'output').
+    Extrai .zip para tmp_root. Retorna:
+      - [src]                      se o próprio dir já tem 'annotations/';
+      - [gpu0, gpu1, ...]          se tem vários sub-datasets (várias GPUs numa
+                                   máquina — zip de 'output' contendo gpu0/gpu1).
     """
     if src.is_file() and src.suffix.lower() == ".zip":
         dest = tmp_root / src.stem
@@ -51,13 +53,13 @@ def _resolve_source(src: Path, tmp_root: Path) -> Path:
         src = dest
     if not src.is_dir():
         sys.exit(f"[merge] fonte inválida: {src}")
-    # A raiz correta é a que tem 'annotations/'. Procura no próprio dir e 1 nível.
     if (src / "annotations").is_dir():
-        return src
-    for child in sorted(src.iterdir()):
-        if child.is_dir() and (child / "annotations").is_dir():
-            return child
-    sys.exit(f"[merge] não achei 'annotations/' em {src}")
+        return [src]
+    roots = [c for c in sorted(src.iterdir())
+             if c.is_dir() and (c / "annotations").is_dir()]
+    if roots:
+        return roots
+    sys.exit(f"[merge] não achei 'annotations/' em {src} (nem em subpastas)")
 
 
 def _split_of(ann_path: Path) -> str:
@@ -156,7 +158,7 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="merge_ds_") as tmp:
         tmp_root = Path(tmp)
-        resolved = [_resolve_source(s, tmp_root) for s in args.sources]
+        resolved = [r for s in args.sources for r in _resolve_sources(s, tmp_root)]
         merge(resolved, args.out)
 
 
