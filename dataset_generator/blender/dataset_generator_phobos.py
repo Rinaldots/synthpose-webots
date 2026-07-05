@@ -233,13 +233,10 @@ def _setup_scene():
     sc.cycles.device                     = "GPU"
     
     sc.cycles.samples                    = 64
-    sc.cycles.use_denoising              = True
+    sc.cycles.use_denoising              = False
     sc.cycles.denoiser                   = "OPENIMAGEDENOISE"
     
-    # CORREÇÃO EXATA: O nome do atributo correto na API do Cycles
-    sc.cycles.denousing_use_gpu          = True # (Se falhar por digitação, use a linha abaixo genérica)
-    if hasattr(sc.cycles, 'denoising_use_gpu'):
-        sc.cycles.denoising_use_gpu = True
+    
 
     # Mantém dados de dispositivo (BVH/kernel/buffers) residentes na VRAM entre
     # frames em vez de reconstruir/re-subir tudo a cada render. Ganho parcial
