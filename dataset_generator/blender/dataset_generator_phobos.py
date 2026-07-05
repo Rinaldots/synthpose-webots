@@ -221,7 +221,7 @@ def _setup_scene():
 
     sc = bpy.context.scene
     sc.render.engine                     = "CYCLES"
-    sc.cycles.samples                    = 64
+    sc.cycles.samples                    = 16
     sc.cycles.use_denoising              = True
     sc.cycles.denoiser                   = "OPENIMAGEDENOISE"
     # Mantém dados de dispositivo (BVH/kernel/buffers) residentes na VRAM entre
@@ -309,6 +309,18 @@ time_viewlayer = 0.0
 time_render = 0.0
 time_post = 0.0
 time_total = 0.0
+
+# DEBUG: Imprimir quais devices o Blender de fato ativou pra renderizar
+print("[GEN-PHOBOS] --- GPU CHECK ---")
+prefs = bpy.context.preferences
+if 'cycles' in prefs.addons:
+    cprefs = prefs.addons['cycles'].preferences
+    print(f"[GEN-PHOBOS] compute_device_type = {cprefs.compute_device_type}")
+    for d in cprefs.devices:
+        print(f"[GEN-PHOBOS] Device: {d.name} | type: {d.type} | use: {d.use}")
+else:
+    print("[GEN-PHOBOS] Addon Cycles não encontrado nas preferências.")
+print("[GEN-PHOBOS] -------------------")
 
 for i in range(NUM_SAMPLES):
     t_start = time.time()
