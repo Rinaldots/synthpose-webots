@@ -221,9 +221,17 @@ def _setup_scene():
 
     sc = bpy.context.scene
     sc.render.engine                     = "CYCLES"
+    
+    # IMPORTANTE: Força o Cycles a usar computação por GPU para a renderização
+    sc.cycles.device                     = "GPU"
+    
     sc.cycles.samples                    = 64
     sc.cycles.use_denoising              = True
-    sc.cycles.denoiser                   = "OIDN"
+    sc.cycles.denoiser                   = "OPENIMAGEDENOISE"
+    
+    # CORREÇÃO: Removido o 'context.scene' duplicado
+    sc.cycles.denoiser_use_gpu           = True
+    
     # Mantém dados de dispositivo (BVH/kernel/buffers) residentes na VRAM entre
     # frames em vez de reconstruir/re-subir tudo a cada render. Ganho parcial
     # (a cena muda por frame), custo de VRAM desprezível (T4 15GB, usamos <1GB).
@@ -232,6 +240,7 @@ def _setup_scene():
     sc.render.resolution_y               = H
     sc.render.image_settings.file_format = "PNG"
     return ground, sun_obj, cam_obj, cam_data, world
+
 
 ground, sun_obj, cam_obj, cam_data, world = _setup_scene()
 scene_rand = SceneRandomizer(rng, ground, world)
