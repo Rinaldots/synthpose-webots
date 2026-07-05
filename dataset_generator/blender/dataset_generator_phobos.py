@@ -223,6 +223,10 @@ def _setup_scene():
     sc.cycles.samples                    = 64
     sc.cycles.use_denoising              = True
     sc.cycles.denoiser                   = "OPENIMAGEDENOISE"
+    # Mantém dados de dispositivo (BVH/kernel/buffers) residentes na VRAM entre
+    # frames em vez de reconstruir/re-subir tudo a cada render. Ganho parcial
+    # (a cena muda por frame), custo de VRAM desprezível (T4 15GB, usamos <1GB).
+    sc.render.use_persistent_data        = True
     sc.render.resolution_x               = W
     sc.render.resolution_y               = H
     sc.render.image_settings.file_format = "PNG"
