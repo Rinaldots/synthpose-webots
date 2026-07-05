@@ -126,6 +126,11 @@ for s in dcfg.splits:
     if b.images:
         print(f"[GEN-PHOBOS] {s}: carregou {len(b.images)} amostras existentes")
 
+# Conjunto de file_names já anotados (ex.: "train/nao_00042.png"). Serve de retomada
+# quando as imagens locais já foram enviadas à nuvem e apagadas p/ liberar disco —
+# o JSON permanece local, então dá p/ pular sem precisar baixar os PNGs de volta.
+_done_names = {img["file_name"] for b in split_builders.values() for img in b.images}
+
 # ---------------------------------------------------------------------------
 # Setup do rig Phobos
 # ---------------------------------------------------------------------------
@@ -348,11 +353,12 @@ for i in range(NUM_SAMPLES):
     img_path = img_dir / img_name
     ann_name = f"{split}/{img_name}"
 
-    # Retomada: se o PNG já existe (rodada anterior), pula sem re-renderizar nem
-    # re-anotar. A anotação, se houver, já veio de load_existing(); imagens sem
-    # anotação (area<1) ficam como órfãs inofensivas. Não consome o RNG — os
-    # frames restantes recebem poses válidas (só não idênticas a um run do zero).
-    if _args.resume and img_path.exists():
+    # Retomada: pula se o PNG já existe (rodada anterior) OU se o frame já está
+    # anotado no JSON (imagem já enviada à nuvem e apagada p/ liberar disco). A
+    # anotação, se houver, já veio de load_existing(); imagens sem anotação (area<1)
+    # ficam como órfãs inofensivas. Não consome o RNG — os frames restantes recebem
+    # poses válidas (só não idênticas a um run do zero).
+    if _args.resume and (img_path.exists() or ann_name in _done_names):
         continue
 
     t0 = time.time()

@@ -14,6 +14,13 @@ projeta 3D→2D → calcula visibilidade/bbox → grava anotação COCO.
     fatia disjunta do job (via `nao_coco_pose.sharding.shard_range`). Tem precedência sobre
     `--start`/`--num`. Como a semente é `seed + start`, fatias disjuntas → poses e nomes
     de arquivo disjuntos automaticamente.
+  - **Coordenação dinâmica (notebook Kaggle, `DYNAMIC=True`)**: em vez de `--rank`
+    manual, o notebook usa `scripts/coordinator.py` p/ reivindicar o próximo LOTE livre
+    de `_claims/` no Drive (registro `chunk_{i}.json` com machine+ts+done), gerar em
+    `chunk_{i}/`, marcar done e repetir. Ligar/desligar máquinas à vontade; lotes sem
+    heartbeat há `stale_s` (máquina caiu) voltam à fila e são retomados pelo JSON parcial.
+    Índices globais por lote → nomes únicos → o merge só concatena. Exige backup (o Drive
+    é a coordenação). Protocolo: escreve→propaga→relê (last-writer-wins resolve empates).
 - Juntar datasets de várias máquinas (fora do Blender, sem deps além da stdlib):
   `python scripts/merge_datasets.py runA.zip runB/output --out output_merged`
   - Aceita `.zip` (baixados do Kaggle) ou pastas `output/`. Renumera `image_id`/`ann_id`
@@ -23,8 +30,27 @@ projeta 3D→2D → calcula visibilidade/bbox → grava anotação COCO.
   - No notebook, `monitor.run_with_monitor(cmd, out_dir, num)` roda o monitor em paralelo
     com a geração. Sem deps novas — lê `nvidia-smi` e conta PNGs em `<out>/images/**`.
   - Backup incremental do dataset pro PC: `--backup-remote gdrive:pasta [--backup-every 100]`
-    faz `rclone copy` (só arquivos novos) a cada N imagens. rclone precisa estar configurado
-    (Google Drive etc.); single-flight e não-bloqueante (não trava o monitor).
+    a cada N imagens **MOVE** as imagens pra nuvem (`rclone move`, apaga a cópia local →
+    libera o disco do Kaggle, poupando renders do último minuto via `--min-age`) e **COPIA**
+    os JSON (ficam locais p/ resume + progresso). `--no-backup-prune` volta ao copy puro.
+    rclone precisa estar configurado; single-flight e não-bloqueante (backup final é síncrono).
+  - **Backend de storage é plugável (é tudo rclone)**: o notebook tem `STORAGE`:
+    `"drive"` (Google Drive; cuidado com a cota 403 'Queries per minute' da API
+    compartilhada — use client_id próprio) ou `"tailscale"` (grava no **PC do usuário**
+    via `rclone serve webdav` + Tailscale userspace no Kaggle; sem cota, espaço = disco
+    do PC, mas o PC precisa ficar ligado). Ver `docs/storage_tailscale.md`. Trocar de
+    backend = mudar `STORAGE`/`BACKUP_REMOTE`; nenhum código do pipeline muda.
+- Migrar um backup ANTIGO (formato por-rank) para o modo dinâmico (reaproveitar trabalho):
+  `python scripts/import_drive_backup.py --src ~/synthpose-old --dst ~/synthpose-backup/kaggle --total N --chunk 500`
+  - Agrupa as imagens por lote (`c = índice // chunk`); lotes **completos** viram
+    `chunk_{c}/imported/` + `_claims/chunk_{c}.json` (done) → o coordenador os pula.
+    Lotes incompletos (pontas) são ignorados e o novo job os regenera (sem colisão).
+    Casa os índices globais dos nomes `nao_{N}.png`; não mistura poses dos dois modos.
+- Baixar do Drive e juntar tudo (no PC, no fim do job):
+  `python scripts/download_and_merge.py --remote gdrive:pasta --out output_merged`
+  - Baixa todas as pastas de dataset do topo do remote (`chunk_*`/`rank*`, pulando
+    `_claims/`) e chama o `merge_datasets`. Como o backup move as imagens, o dataset
+    completo vive na nuvem.
 - Overlay de validação (5 poses, projeta os keypoints sobre o render):
   `blender --background nao_blender.blend --python overlay_phobos.py`
 - Validar JSON gerado:

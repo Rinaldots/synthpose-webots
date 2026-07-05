@@ -82,11 +82,36 @@ def count_done(out_dir: Path, image_format: str = "png") -> int:
     return sum(1 for p in out_dir.rglob(f"*.{image_format}") if "images" in p.parts)
 
 
+def _count_annotated(out_dir: Path) -> int:
+    """Soma ``len(images)`` dos JSON de anotação sob ``out_dir``.
+
+    Reflete o total já GERADO mesmo depois que as imagens locais foram enviadas à
+    nuvem e apagadas p/ liberar disco (o JSON permanece local — ver _run_backup).
+    """
+    total = 0
+    for jf in Path(out_dir).rglob("person_keypoints_*.json"):
+        try:
+            with open(jf) as f:
+                total += len(json.load(f).get("images", []))
+        except (OSError, ValueError):
+            pass
+    return total
+
+
+def progress_count(out_dir: Path, image_format: str = "png") -> int:
+    """Total feito: max(PNGs locais, imagens anotadas no JSON).
+
+    Robusto ao prune das imagens já salvas na nuvem: quando o backup apaga os PNGs
+    locais, o PNG-count cai mas o JSON-count continua subindo — o max dá o real.
+    """
+    return max(count_done(out_dir, image_format), _count_annotated(out_dir))
+
+
 def snapshot_dict(out_dir: Path, num: int | None, t0: float, done0: int,
                   rank: int | None = None, image_format: str = "png") -> dict:
     """Estado estruturado do instante atual (serializável p/ ntfy)."""
     now = time.time()
-    done = count_done(out_dir, image_format)
+    done = progress_count(out_dir, image_format)
     elapsed = max(now - t0, 1e-6)
     rate = (done - done0) / elapsed
     eta_s = (num - done) / rate if (num and rate > 1e-9) else None
@@ -164,13 +189,22 @@ def publish_ntfy(topic: str, payload: dict, server: str = NTFY_DEFAULT_SERVER) -
 _backup_lock = threading.Lock()
 
 
-def _run_backup(out_dir: Path, remote: str) -> None:
-    """Dispara `rclone copy out_dir remote` em background (não bloqueia o monitor).
+def _run_backup(out_dir: Path, remote: str, prune: bool = True,
+                min_age: str | None = "1m", wait: bool = False) -> None:
+    """Dispara o backup incremental p/ a nuvem em background (não bloqueia o monitor).
 
-    Single-flight: se um backup anterior ainda roda, pula este ciclo (rclone copy
-    é incremental — sobe só arquivos novos — então o próximo pega o atraso).
+    Com ``prune`` (default), as imagens são ENVIADAS E APAGADAS localmente
+    (``rclone move``) p/ liberar o disco do Kaggle — o rclone só apaga a origem
+    depois de verificar o arquivo no destino. ``min_age`` poupa os renders recentes
+    (podem estar sendo escritos agora); passe ``None`` no backup final p/ subir tudo.
+    As anotações (JSON) são sempre só COPIADAS — ficam locais p/ o ``--resume``
+    relê-las e p/ a contagem de progresso não regredir.
+
+    Single-flight: se um backup anterior ainda roda, pula este ciclo (é incremental,
+    então o próximo pega o atraso). Com ``wait=True`` (backup final), ESPERA o lock
+    e roda de forma síncrona — garante que o último lote suba antes de encerrar.
     """
-    if not _backup_lock.acquire(blocking=False):
+    if not _backup_lock.acquire(blocking=wait):
         return
     def _job():
         try:
@@ -178,16 +212,38 @@ def _run_backup(out_dir: Path, remote: str) -> None:
             if not exe:
                 print("[monitor] rclone não encontrado; backup pulado", flush=True)
                 return
-            r = subprocess.run([exe, "copy", str(out_dir), remote,
-                                "--transfers=8", "--checkers=8", "--exclude=*.log"],
-                               capture_output=True, text=True, timeout=900)
-            msg = "ok" if r.returncode == 0 else f"FALHOU: {r.stderr.strip()[:200]}"
-            print(f"[monitor] backup -> {remote}: {msg}", flush=True)
+            common = ["--transfers=8", "--checkers=8"]
+            # 1) Imagens: move (sobe + apaga local) se prune, senão copy.
+            img_cmd = [exe, "move" if prune else "copy", str(out_dir), remote,
+                       "--include=**/images/**", *common]
+            if prune and min_age:
+                img_cmd.append(f"--min-age={min_age}")
+            r1 = subprocess.run(img_cmd, capture_output=True, text=True, timeout=1800)
+            # 2) Anotações/metadata: sempre copy (mantém local p/ resume + progresso).
+            r2 = subprocess.run([exe, "copy", str(out_dir), remote,
+                                 "--exclude=**/images/**", "--exclude=*.log", *common],
+                                capture_output=True, text=True, timeout=300)
+            fail = next((r.stderr.strip()[:200] for r in (r1, r2) if r.returncode), "")
+            msg = "ok" if not fail else f"FALHOU: {fail}"
+            verb = "move+copy" if prune else "copy"
+            print(f"[monitor] backup ({verb}) -> {remote}: {msg}", flush=True)
         except Exception as e:                    # noqa: BLE001 — backup nunca derruba a geração
             print(f"[monitor] backup erro: {e}", flush=True)
         finally:
             _backup_lock.release()
-    threading.Thread(target=_job, daemon=True).start()
+    if wait:
+        _job()
+    else:
+        threading.Thread(target=_job, daemon=True).start()
+
+
+def flush_backup(out_dir: Path | str, remote: str, prune: bool = True) -> None:
+    """Backup final SÍNCRONO: sobe TUDO (sem ``min_age``) e só retorna ao terminar.
+
+    Chame no encerramento do notebook, depois de parar o monitor, p/ garantir que
+    o último lote de imagens (renderizadas no último minuto) chegue ao Drive.
+    """
+    _run_backup(Path(out_dir), remote, prune=prune, min_age=None, wait=True)
 
 
 # ---------------------------------------------------------------------------
@@ -197,17 +253,19 @@ def watch(out_dir: Path, num: int | None, interval: float = 5.0,
           stop: threading.Event | None = None, image_format: str = "png",
           rank: int | None = None, ntfy_topic: str | None = None,
           ntfy_server: str = NTFY_DEFAULT_SERVER,
-          backup_remote: str | None = None, backup_every: int = 100) -> None:
+          backup_remote: str | None = None, backup_every: int = 100,
+          backup_prune: bool = True) -> None:
     """Imprime (e opcionalmente publica no ntfy) um snapshot a cada `interval` s.
 
-    Se `backup_remote` for dado, faz `rclone copy` do out_dir a cada `backup_every`
-    imagens novas (backup incremental para a nuvem).
+    Se `backup_remote` for dado, faz backup incremental do out_dir a cada
+    `backup_every` imagens novas. Com `backup_prune` (default), as imagens são
+    movidas p/ a nuvem (apaga a cópia local, liberando disco); o JSON fica local.
 
     Para quando `stop` é setado (modo embutido) ou o alvo `num` é atingido.
     """
     out_dir = Path(out_dir)
     t0 = time.time()
-    done0 = count_done(out_dir, image_format)
+    done0 = progress_count(out_dir, image_format)
     step = max(int(backup_every), 1)
     last_backup = done0 // step
     dest = f"  ->ntfy:{ntfy_topic}" if ntfy_topic else ""
@@ -220,16 +278,18 @@ def watch(out_dir: Path, num: int | None, interval: float = 5.0,
             publish_ntfy(ntfy_topic, d, ntfy_server)
         if backup_remote and d["done"] // step > last_backup:
             last_backup = d["done"] // step
-            _run_backup(out_dir, backup_remote)
+            _run_backup(out_dir, backup_remote, prune=backup_prune)
         if num and d["done"] >= num:
             print("[monitor] alvo atingido.", flush=True)
-            if backup_remote:
-                _run_backup(out_dir, backup_remote)      # backup final
+            if backup_remote:                            # final: min_age=None sobe tudo
+                _run_backup(out_dir, backup_remote, prune=backup_prune,
+                            min_age=None, wait=True)
             return
         if stop is not None and stop.wait(interval):
             print("[monitor] encerrado.", flush=True)
-            if backup_remote:
-                _run_backup(out_dir, backup_remote)      # backup final
+            if backup_remote:                            # final: min_age=None sobe tudo
+                _run_backup(out_dir, backup_remote, prune=backup_prune,
+                            min_age=None, wait=True)
             return
         if stop is None:
             time.sleep(interval)
@@ -251,7 +311,8 @@ def run_with_monitor(cmd: list[str], out_dir: str | Path, num: int | None = None
                      cwd: str | Path | None = None, interval: float = 5.0,
                      rank: int | None = None, ntfy_topic: str | None = None,
                      ntfy_server: str = NTFY_DEFAULT_SERVER,
-                     backup_remote: str | None = None, backup_every: int = 100) -> int:
+                     backup_remote: str | None = None, backup_every: int = 100,
+                     backup_prune: bool = True) -> int:
     """Roda `cmd` (a geração) e, em paralelo, um monitor até o processo terminar.
 
     Se `ntfy_topic` for dado, cada snapshot também é publicado no tópico (para o
@@ -263,7 +324,8 @@ def run_with_monitor(cmd: list[str], out_dir: str | Path, num: int | None = None
         target=watch,
         kwargs=dict(out_dir=Path(out_dir), num=num, interval=interval, stop=stop,
                     rank=rank, ntfy_topic=ntfy_topic, ntfy_server=ntfy_server,
-                    backup_remote=backup_remote, backup_every=backup_every),
+                    backup_remote=backup_remote, backup_every=backup_every,
+                    backup_prune=backup_prune),
         daemon=True,
     )
     th.start()
@@ -274,7 +336,7 @@ def run_with_monitor(cmd: list[str], out_dir: str | Path, num: int | None = None
         stop.set()
         th.join(timeout=interval + 2)
         d = snapshot_dict(Path(out_dir), num, time.time() - interval,
-                          max(count_done(Path(out_dir)) - 1, 0), rank=rank)
+                          max(progress_count(Path(out_dir)) - 1, 0), rank=rank)
         print(_format_line(d), flush=True)
         if ntfy_topic:
             publish_ntfy(ntfy_topic, d, ntfy_server)
@@ -374,6 +436,8 @@ def main() -> None:
                     help="Destino rclone (ex.: 'gdrive:synthpose-backup') p/ backup incremental.")
     ap.add_argument("--backup-every", type=int, default=100,
                     help="Faz backup a cada N imagens novas (default: 100).")
+    ap.add_argument("--no-backup-prune", dest="backup_prune", action="store_false",
+                    help="Não apagar as imagens locais após o backup (mantém tudo em disco).")
     args = ap.parse_args()
 
     if args.subscribe:
@@ -394,7 +458,8 @@ def main() -> None:
     try:
         watch(args.out, num, args.interval, rank=args.rank,
               ntfy_topic=args.ntfy, ntfy_server=args.ntfy_server,
-              backup_remote=args.backup_remote, backup_every=args.backup_every)
+              backup_remote=args.backup_remote, backup_every=args.backup_every,
+              backup_prune=args.backup_prune)
     except KeyboardInterrupt:
         print("\n[monitor] interrompido pelo usuário.")
 
