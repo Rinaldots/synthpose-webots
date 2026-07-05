@@ -25,19 +25,27 @@ class SceneRandomizer:
         self.rng         = rng
         self._ground     = ground_obj
         self._world      = world_obj
-        self._scene_objs: list = []
         self._floor_mat  = self._init_floor_mat()
         # Grafo do mundo (céu/HDRI) construído uma vez e reaproveitado por frame.
         self._world_built = False
         self._bg_node = self._env_node = self._map_node = None
+        # --- Pools reaproveitados entre frames (evita bpy.ops por frame) ---
+        # Meshes-base unitárias criadas uma vez; objetos são instâncias dela só
+        # com transform/material próprios. Objetos e materiais são reciclados:
+        # a cada frame os não usados são escondidos (render + viewport/depsgraph).
+        self._base_meshes: dict = {}
+        self._pool:  dict = {"cube": [], "cyl": [], "cone": []}
+        self._used:  dict = {"cube": 0,  "cyl": 0,  "cone": 0}
+        self._mat_pool: list = []
+        self._mat_idx = 0
 
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
 
     def randomize(self, cam_pos: tuple) -> None:
-        """Reconstrói a cena completa a cada frame."""
-        self._clear_scene()
+        """Repovoa a cena a cada frame reciclando o pool de objetos."""
+        self._begin_frame()
         self._randomize_sky()
         scene = str(self.rng.choice(SCENE_TYPES))
         if scene == "plain":
@@ -45,62 +53,119 @@ class SceneRandomizer:
         else:
             getattr(self, f"_build_{scene}")()
         self._add_occluder(cam_pos)
+        self._end_frame()
 
     def cleanup(self) -> None:
-        self._clear_scene()
+        """Remove de vez os objetos/materiais/meshes do pool (fim da geração)."""
+        for pool in self._pool.values():
+            for obj in pool:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            pool.clear()
+        for mat in self._mat_pool:
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+        self._mat_pool.clear()
+        for mesh in self._base_meshes.values():
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+        self._base_meshes.clear()
 
     # ------------------------------------------------------------------
-    # Gestão de memória
+    # Gestão do pool (recicla objetos entre frames)
     # ------------------------------------------------------------------
 
-    def _clear_scene(self):
-        mats:   set = set()
-        meshes: set = set()
-        for obj in self._scene_objs:
-            if obj.type == "MESH":
-                meshes.add(obj.data)
-                for m in obj.data.materials:
-                    if m: mats.add(m)
-            bpy.data.objects.remove(obj, do_unlink=True)
-        for mesh in meshes:
-            if mesh.users == 0: bpy.data.meshes.remove(mesh)
-        for mat in mats:
-            if mat.users  == 0: bpy.data.materials.remove(mat)
-        self._scene_objs.clear()
+    def _begin_frame(self) -> None:
+        """Zera os contadores de uso do frame."""
+        for k in self._used:
+            self._used[k] = 0
+        self._mat_idx = 0
+
+    def _end_frame(self) -> None:
+        """Esconde os objetos do pool não usados neste frame.
+
+        hide_render tira do render; hide_viewport tira do depsgraph do view layer
+        (usado pelo ray_cast de visibilidade) — sem isso, um objeto oculto na
+        posição antiga bloquearia raios indevidamente.
+        """
+        for kind, pool in self._pool.items():
+            for obj in pool[self._used[kind]:]:
+                if not obj.hide_render:
+                    obj.hide_render = True
+                    obj.hide_viewport = True
+
+    def _base_mesh(self, kind: str):
+        """Mesh unitária compartilhada (criada uma vez) para 'cube'/'cyl'/'cone'."""
+        mesh = self._base_meshes.get(kind)
+        if mesh is not None:
+            return mesh
+        if kind == "cube":
+            bpy.ops.mesh.primitive_cube_add(size=1)
+        elif kind == "cyl":
+            bpy.ops.mesh.primitive_cylinder_add(radius=1, depth=1)
+        else:  # cone
+            bpy.ops.mesh.primitive_cone_add(radius1=1, radius2=0, depth=1)
+        tmp  = bpy.context.active_object
+        mesh = tmp.data
+        mesh.name = f"_base_{kind}"
+        if not mesh.materials:                    # 1 slot -> permite material por-OBJETO
+            ph = bpy.data.materials.get("_slot_ph") or bpy.data.materials.new("_slot_ph")
+            mesh.materials.append(ph)             # placeholder (nunca usado: objetos usam link=OBJECT)
+        bpy.data.objects.remove(tmp, do_unlink=True)   # some com o objeto temp; a mesh fica
+        self._base_meshes[kind] = mesh
+        return mesh
+
+    def _spawn(self, kind: str, loc, scale, rot_z=0.0):
+        """Devolve um objeto do pool de `kind` (reciclado) com o transform dado."""
+        pool = self._pool[kind]
+        i    = self._used[kind]
+        if i < len(pool):
+            obj = pool[i]
+        else:
+            obj = bpy.data.objects.new(f"_pool_{kind}_{i}", self._base_mesh(kind))
+            bpy.context.scene.collection.objects.link(obj)
+            pool.append(obj)
+        self._used[kind] = i + 1
+        obj.hide_render = obj.hide_viewport = False
+        obj.location       = loc
+        obj.scale          = scale
+        obj.rotation_euler = (0.0, 0.0, float(rot_z))
+        return obj
 
     # ------------------------------------------------------------------
-    # Primitivas
+    # Primitivas (reciclam o pool; sem bpy.ops por frame)
     # ------------------------------------------------------------------
 
     def _add_box(self, loc, scale, rot_z=0.0, color=None, roughness=0.7, metallic=0.0):
-        bpy.ops.mesh.primitive_cube_add(size=1, location=loc)
-        obj = bpy.context.active_object
-        obj.scale = scale
-        if rot_z: obj.rotation_euler[2] = rot_z
+        obj = self._spawn("cube", loc, scale, rot_z)
         self._mat(obj, color, roughness, metallic)
-        self._scene_objs.append(obj)
         return obj
 
     def _add_cyl(self, loc, radius, depth, rot_z=0.0, color=None, roughness=0.5, metallic=0.0):
-        bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=depth, location=loc)
-        obj = bpy.context.active_object
-        if rot_z: obj.rotation_euler[2] = rot_z
+        # Mesh-base é um cilindro unitário (r=1, h=1); a escala reproduz radius/depth.
+        obj = self._spawn("cyl", loc, (radius, radius, depth), rot_z)
         self._mat(obj, color, roughness, metallic)
-        self._scene_objs.append(obj)
         return obj
 
     def _mat(self, obj, color, roughness, metallic=0.0):
         r   = self.rng
-        mat = bpy.data.materials.new(f"_M{len(self._scene_objs)}")
-        mat.use_nodes = True
+        # Recicla um material do pool e sobrescreve só os valores; ligado ao OBJETO
+        # (não à mesh compartilhada), senão todos os objetos herdariam a mesma cor.
+        if self._mat_idx < len(self._mat_pool):
+            mat = self._mat_pool[self._mat_idx]
+        else:
+            mat = bpy.data.materials.new(f"_poolM{len(self._mat_pool)}")
+            mat.use_nodes = True
+            self._mat_pool.append(mat)
+        self._mat_idx += 1
         bsdf = mat.node_tree.nodes["Principled BSDF"]
         if color is None:
             color = _hsv(float(r.uniform(0,1)), float(r.uniform(0.05,0.5)), float(r.uniform(0.2,0.8)))
         bsdf.inputs["Base Color"].default_value = color
         bsdf.inputs["Roughness"].default_value  = float(roughness)
         bsdf.inputs["Metallic"].default_value   = float(metallic)
-        obj.data.materials.clear()
-        obj.data.materials.append(mat)
+        slot = obj.material_slots[0]
+        slot.link     = "OBJECT"
+        slot.material = mat
 
     # ------------------------------------------------------------------
     # Chão — texturas procedurais
@@ -418,5 +483,5 @@ class SceneRandomizer:
             elif shape=="CYL":
                 self._add_cyl((x,y,sz/2),sx/2,sz)
             else:
-                bpy.ops.mesh.primitive_cone_add(radius1=sx/2,depth=sz,location=(x,y,sz/2))
-                obj=bpy.context.active_object; self._mat(obj,None,0.8); self._scene_objs.append(obj)
+                obj = self._spawn("cone", (x,y,sz/2), (sx/2, sx/2, sz))
+                self._mat(obj, None, 0.8)
