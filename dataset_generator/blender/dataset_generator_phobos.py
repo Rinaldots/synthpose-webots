@@ -222,8 +222,8 @@ def _setup_scene():
     sc = bpy.context.scene
     sc.render.engine                     = "CYCLES"
     sc.cycles.samples                    = 16
-    sc.cycles.use_denoising              = True
-    sc.cycles.denoiser                   = "OPTIX"
+    sc.cycles.use_denoising              = False
+    sc.cycles.denoiser                   = "OPENIMAGEDENOISE"
     # Mantém dados de dispositivo (BVH/kernel/buffers) residentes na VRAM entre
     # frames em vez de reconstruir/re-subir tudo a cada render. Ganho parcial
     # (a cena muda por frame), custo de VRAM desprezível (T4 15GB, usamos <1GB).
