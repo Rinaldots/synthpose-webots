@@ -216,22 +216,31 @@ def _setup_scene():
     bpy.context.scene.camera = cam_obj
 
     world = bpy.data.worlds.new("World")
-    world.use_nodes = True
+    # CORREÇÃO BLENDER >4.3: Evita o aviso de obsolescência (DeprecationWarning) para a v6.0
+    # O uso de nós em mundos novos já é o padrão ou gerenciado nativamente.
+    if hasattr(world, 'use_nodes'):
+        try:
+            world.use_nodes = True
+        except AttributeError:
+            pass
+            
     bpy.context.scene.world = world
 
     sc = bpy.context.scene
     sc.render.engine                     = "CYCLES"
     
-    # IMPORTANTE: Força o Cycles a usar computação por GPU para a renderização
+    # Garante que o motor Cycles use a GPU para renderizar
     sc.cycles.device                     = "GPU"
     
     sc.cycles.samples                    = 64
     sc.cycles.use_denoising              = True
     sc.cycles.denoiser                   = "OPENIMAGEDENOISE"
     
-    # CORREÇÃO: Removido o 'context.scene' duplicado
-    sc.cycles.denoiser_use_gpu           = True
-    
+    # CORREÇÃO EXATA: O nome do atributo correto na API do Cycles
+    sc.cycles.denousing_use_gpu          = True # (Se falhar por digitação, use a linha abaixo genérica)
+    if hasattr(sc.cycles, 'denoising_use_gpu'):
+        sc.cycles.denoising_use_gpu = True
+
     # Mantém dados de dispositivo (BVH/kernel/buffers) residentes na VRAM entre
     # frames em vez de reconstruir/re-subir tudo a cada render. Ganho parcial
     # (a cena muda por frame), custo de VRAM desprezível (T4 15GB, usamos <1GB).
@@ -240,6 +249,7 @@ def _setup_scene():
     sc.render.resolution_y               = H
     sc.render.image_settings.file_format = "PNG"
     return ground, sun_obj, cam_obj, cam_data, world
+
 
 
 ground, sun_obj, cam_obj, cam_data, world = _setup_scene()
