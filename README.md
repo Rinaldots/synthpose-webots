@@ -136,6 +136,10 @@ Checkpoints salvos em `dataset_generator/checkpoints/best.pt`.
 | torch + torchvision | treino do modelo |
 | pycocotools | validação do JSON |
 
+## Resultado
+
+https://github.com/user-attachments/assets/e09e9f48-f1a5-45a6-9c40-baad2a0cc1f6
+
 ## Licença
 
 MIT
